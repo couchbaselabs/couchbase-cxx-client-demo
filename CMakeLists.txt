@@ -11,7 +11,7 @@ cpmaddpackage(
   NAME
   couchbase_cxx_client
   GIT_TAG
-  ce21656f7593ff35daff9fb0f3fbddb02b3a5636
+  76c30a927e81f8cc58f00c1cdba2f996c8c24385
   VERSION
   1.0.0
   GITHUB_REPOSITORY
@@ -20,4 +20,5 @@ cpmaddpackage(
   "COUCHBASE_CXX_CLIENT_STATIC_BORINGSSL ON")
 
 add_executable(minimal minimal.cpp)
-target_link_libraries(minimal couchbase_cxx_client taocpp::json)
+target_link_libraries(minimal couchbase_cxx_client::couchbase_cxx_client
+                      taocpp::json)
