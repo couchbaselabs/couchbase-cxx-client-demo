@@ -1,0 +1,120 @@
+name: Test Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+      - name: Install cbdinocluster
+        shell: python
+        run: |
+          import os
+          import platform
+          import urllib.request
+          home_bin_path = os.path.expanduser("~/bin")
+          os.makedirs(home_bin_path, exist_ok=True)
+          cbdinocluster_filename = "cbdinocluster-windows-amd64.exe" if platform.system() == "Windows" else "cbdinocluster-linux-amd64"
+          cbdinocluster_url = f"https://github.com/couchbaselabs/cbdinocluster/releases/download/v0.0.46/{cbdinocluster_filename}"
+          cbdinocluster_path = os.path.join(home_bin_path, 'cbdinocluster')
+          urllib.request.urlretrieve(cbdinocluster_url, cbdinocluster_path)
+          if platform.system() != "Windows":
+            os.chmod(cbdinocluster_path, 0o755)
+          github_path = os.getenv("GITHUB_PATH")
+          if github_path:
+            with open(github_path, "a") as f:
+              f.write(f"{home_bin_path}\n")
+      - name: Initialize cbdinocluster
+        shell: python
+        run: |
+          import os
+          import platform
+          import subprocess
+          subprocess.run(['cbdinocluster', '-v', 'init', '--auto', '--disable-aws', '--disable-azure', '--disable-capella', '--disable-k8s'])
+      - name: Start Couchbase Cluster
+        shell: python
+        run: |
+          import os
+          import sys
+          import platform
+          import subprocess
+          def capture_output(command):
+            print(command)
+            result = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE)
+            return result.stdout.strip()
+          print("##[group]Allocate", file=sys.stderr)
+          cluster_config = """\
+          nodes:
+            - count: 2
+              version: 7.6.1
+              services:
+                - kv
+                - n1ql
+                - index
+            - count: 1
+              version: 7.6.1
+              services:
+                - kv
+                - fts
+                - cbas
+                - eventing
+          docker:
+            kv-memory: 1600
+          """
+          with open("cluster.yaml", "w") as f:
+            f.write(cluster_config)
+          print(cluster_config)
+          cluster_id = capture_output(['cbdinocluster', '-v', 'allocate', '--def-file', 'cluster.yaml'])
+          print("##[endgroup]", file=sys.stderr)
+          print("##[group]Buckets", file=sys.stderr)
+          subprocess.run(['cbdinocluster', '-v', 'buckets', 'add', cluster_id, 'default', '--ram-quota-mb=100', '--flush-enabled=true'])
+          subprocess.run(['cbdinocluster', '-v', 'buckets', 'load-sample', cluster_id, 'travel-sample'])
+          print("##[endgroup]", file=sys.stderr)
+          connection_string = capture_output(['cbdinocluster', '-v', 'connstr', cluster_id])
+          github_env = os.getenv("GITHUB_ENV")
+          if github_env:
+            with open(github_env, "a") as f:
+              f.write(f"CLUSTER_ID={cluster_id}\n")
+              f.write(f"CONNECTION_STRING={connection_string}\n")
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+      - name: Build
+        timeout-minutes: 60
+        shell: python
+        run: |
+          import os
+          import sys
+          import subprocess
+          os.mkdir('build')
+          print("##[group]CMake Configure", file=sys.stderr)
+          subprocess.run(['cmake', '-S', '.', '-B', 'build'])
+          print("##[endgroup]", file=sys.stderr)
+          print("##[group]CMake Build", file=sys.stderr)
+          subprocess.run(['cmake', '--build', 'build'])
+          print("##[endgroup]", file=sys.stderr)
+      - name: Run
+        timeout-minutes: 60
+        shell: python
+        run: |
+          import os
+          import sys
+          import subprocess
+          for root, _, files in os.walk('build/examples'):
+            for file in files:
+              filepath = os.path.join(root, file)
+              if os.access(filepath, os.X_OK) or filepath.endswith('.exe'):
+                print(f"##[group]{filepath}", file=sys.stderr)
+                subprocess.run(filepath)
+                print("##[endgroup]", file=sys.stderr)

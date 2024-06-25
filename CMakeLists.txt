@@ -19,6 +19,4 @@ cpmaddpackage(
   OPTIONS
   "COUCHBASE_CXX_CLIENT_STATIC_BORINGSSL ON")
 
-add_executable(minimal minimal.cpp)
-target_link_libraries(minimal couchbase_cxx_client::couchbase_cxx_client
-                      taocpp::json)
+add_subdirectory(examples)
