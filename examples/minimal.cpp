@@ -89,8 +89,16 @@ program_config::from_env() -> program_config
   if (const auto* val = getenv("PROFILE"); val != nullptr) {
     config.profile = val; // e.g. "wan_development"
   }
-  if (const auto* val = getenv("PROFILE"); val != nullptr) {
-    config.profile = val; // e.g. "wan_development"
+  if (const auto* val = getenv("VERBOSE"); val != nullptr) {
+    const std::array<std::string, 5> truthy_values = {
+      "yes", "y", "on", "true", "1",
+    };
+    for (const auto& truth : truthy_values) {
+      if (val == truth) {
+        config.verbose = true;
+        break;
+      }
+    }
   }
 
   return config;
@@ -111,6 +119,6 @@ program_config::dump()
   std::cout << "        BUCKET_NAME: " << quote(bucket_name) << "\n";
   std::cout << "         SCOPE_NAME: " << quote(scope_name) << "\n";
   std::cout << "    COLLECTION_NAME: " << quote(collection_name) << "\n";
-  std::cout << "            verbose: " << std::boolalpha << verbose << "\n";
+  std::cout << "            VERBOSE: " << std::boolalpha << verbose << "\n";
   std::cout << "            PROFILE: " << (profile ? quote(*profile) : "[NONE]") << "\n\n";
 }
