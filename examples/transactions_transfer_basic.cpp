@@ -1,7 +1,7 @@
-#include "couchbase/durability_level.hxx"
-#include "couchbase/transactions/attempt_context.hxx"
 #include <couchbase/cluster.hxx>
+#include <couchbase/durability_level.hxx>
 #include <couchbase/logger.hxx>
+#include <couchbase/transactions/attempt_context.hxx>
 
 #include <tao/json.hpp>
 #include <tao/json/to_string.hpp>
@@ -208,7 +208,8 @@ main()
       std::cout << "Unable to update account for Alice: " << err.message() << "\n";
       return EXIT_FAILURE;
     }
-    std::cout << "Alice (CAS=" << resp.cas().value() << "): " << resp.content_as<bank_account>() << "\n";
+    std::cout << "Alice (CAS=" << resp.cas().value() << "): " << resp.content_as<bank_account>()
+              << "\n";
   }
   {
     auto [err, resp] = collection.get("bob", {}).get();
@@ -216,7 +217,8 @@ main()
       std::cout << "Unable to read account for Bob: " << err.message() << "\n";
       return EXIT_FAILURE;
     }
-    std::cout << "Bob (CAS=" << resp.cas().value() << "): " << resp.content_as<bank_account>() << "\n";
+    std::cout << "Bob (CAS=" << resp.cas().value() << "): " << resp.content_as<bank_account>()
+              << "\n";
   }
 
   cluster.close().get();
