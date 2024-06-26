@@ -46,16 +46,31 @@ main()
                         .collection(config.collection_name);
 
     const std::string document_id{ "minimal_example" };
-    const tao::json::value basic_doc{
-      { "a", 1.0 },
-      { "b", 2.0 },
-    };
 
-    auto [err, resp] = collection.upsert(document_id, basic_doc, {}).get();
-    if (err.ec()) {
-      std::cout << "ec: " << err.message() << ", ";
+    {
+      const tao::json::value basic_doc{
+        { "a", 1.0 },
+        { "b", 2.0 },
+      };
+
+      auto [err, resp] = collection.upsert(document_id, basic_doc, {}).get();
+      std::cout << "Upsert id: " << document_id;
+      if (err.ec()) {
+        std::cout << ", Error: " << err.message() << "\n";
+      } else {
+        std::cout << ", CAS: " << resp.cas().value() << "\n";
+      }
     }
-    std::cout << "id: " << document_id << ", CAS: " << resp.cas().value() << "\n";
+    {
+      auto [err, resp] = collection.get(document_id, {}).get();
+      std::cout << "Get id: " << document_id;
+      if (err.ec()) {
+        std::cout << ", Error: " << err.message() << "\n";
+      } else {
+        std::cout << ", CAS: " << resp.cas().value() << "\n";
+        std::cout << tao::json::to_string(resp.content_as<tao::json::value>()) << "\n";
+      }
+    }
   }
 
   cluster.close().get();
