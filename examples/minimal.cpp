@@ -7,7 +7,7 @@
 
 struct program_config {
   std::string connection_string{ "couchbase://127.0.0.1" };
-  std::string username{ "Administrator" };
+  std::string user_name{ "Administrator" };
   std::string password{ "password" };
   std::string bucket_name{ "default" };
   std::string scope_name{ couchbase::scope::default_name };
@@ -31,7 +31,7 @@ main()
     couchbase::logger::set_level(couchbase::logger::log_level::trace);
   }
 
-  auto options = couchbase::cluster_options(config.username, config.password);
+  auto options = couchbase::cluster_options(config.user_name, config.password);
   if (config.profile) {
     options.apply_profile(config.profile.value());
   }
@@ -71,8 +71,8 @@ program_config::from_env() -> program_config
   if (const auto* val = getenv("CONNECTION_STRING"); val != nullptr) {
     config.connection_string = val;
   }
-  if (const auto* val = getenv("USERNAME"); val != nullptr) {
-    config.username = val;
+  if (const auto* val = getenv("USER_NAME"); val != nullptr) {
+    config.user_name = val;
   }
   if (const auto* val = getenv("PASSWORD"); val != nullptr) {
     config.password = val;
@@ -114,7 +114,7 @@ void
 program_config::dump()
 {
   std::cout << "  CONNECTION_STRING: " << quote(connection_string) << "\n";
-  std::cout << "           USERNAME: " << quote(username) << "\n";
+  std::cout << "          USER_NAME: " << quote(user_name) << "\n";
   std::cout << "           PASSWORD: [HIDDEN]\n";
   std::cout << "        BUCKET_NAME: " << quote(bucket_name) << "\n";
   std::cout << "         SCOPE_NAME: " << quote(scope_name) << "\n";

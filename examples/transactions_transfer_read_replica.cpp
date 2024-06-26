@@ -13,6 +13,7 @@ struct program_config {
   std::string connection_string{ "couchbase://127.0.0.1" };
   std::string user_name{ "Administrator" };
   std::string password{ "password" };
+  std::string preferred_server_group{ "Group 1" };
   std::string bucket_name{ "default" };
   std::string scope_name{ couchbase::scope::default_name };
   std::string collection_name{ couchbase::collection::default_name };
@@ -111,6 +112,7 @@ main()
   }
 
   auto options = couchbase::cluster_options(config.user_name, config.password);
+  options.network().preferred_server_group(config.preferred_server_group);
   if (config.profile) {
     options.apply_profile(config.profile.value());
   }
@@ -150,19 +152,31 @@ main()
 
   {
     auto [err, res] = cluster.transactions()->run(
-      [collection](
+      [collection, preferred_server_group = config.preferred_server_group](
         std::shared_ptr<couchbase::transactions::attempt_context> ctx) -> couchbase::error {
-        auto [e1, alice] = ctx->get(collection, "alice");
+        auto [e1, alice] = ctx->get_replica_from_preferred_server_group(collection, "alice");
         if (e1.ec()) {
-          std::cout << "Unable to read account for Alice: " << e1.ec().message() << "\n";
-          return e1;
+          std::cout << "Unable to read account for Alice from preferred group \""
+                    << preferred_server_group << "\": " << e1.ec().message()
+                    << ". Falling back to regular get\n";
+          auto [e2, alice] = ctx->get(collection, "alice");
+          if (e2.ec()) {
+            std::cout << "Unable to read account for Alice: " << e2.ec().message() << "\n";
+            return e2;
+          }
         }
         auto alice_content = alice.content_as<bank_account>();
 
-        auto [e2, bob] = ctx->get(collection, "bob");
-        if (e2.ec()) {
-          std::cout << "Unable to read account for Bob: " << e2.ec().message() << "\n";
-          return e2;
+        auto [e3, bob] = ctx->get_replica_from_preferred_server_group(collection, "bob");
+        if (e3.ec()) {
+          std::cout << "Unable to read account for Bob from preferred group \""
+                    << preferred_server_group << "\": " << e3.ec().message()
+                    << ". Falling back to regular get\n";
+          auto [e4, alice] = ctx->get(collection, "alice");
+          if (e4.ec()) {
+            std::cout << "Unable to read account for Alice: " << e4.ec().message() << "\n";
+            return e4;
+          }
         }
         auto bob_content = bob.content_as<bank_account>();
 
@@ -179,15 +193,15 @@ main()
         bob_content.balance += money_to_transfer;
 
         {
-          auto [e3, a] = ctx->replace(alice, alice_content);
-          if (e3.ec()) {
-            std::cout << "Unable to read account for Alice: " << e3.ec().message() << "\n";
+          auto [e5, a] = ctx->replace(alice, alice_content);
+          if (e5.ec()) {
+            std::cout << "Unable to update account for Alice: " << e5.ec().message() << "\n";
           }
         }
         {
-          auto [e4, b] = ctx->replace(bob, bob_content);
-          if (e4.ec()) {
-            std::cout << "Unable to update account for Bob: " << e4.ec().message() << "\n";
+          auto [e6, b] = ctx->replace(bob, bob_content);
+          if (e6.ec()) {
+            std::cout << "Unable to update account for Bob: " << e6.ec().message() << "\n";
           }
         }
         return {};
@@ -205,10 +219,11 @@ main()
   {
     auto [err, resp] = collection.get("alice", {}).get();
     if (err.ec()) {
-      std::cout << "Unable to update account for Alice: " << err.message() << "\n";
+      std::cout << "Unable to read account for Alice: " << err.message() << "\n";
       return EXIT_FAILURE;
     }
-    std::cout << "Alice (CAS=" << resp.cas().value() << "): " << resp.content_as<bank_account>() << "\n";
+    std::cout << "Alice (CAS=" << resp.cas().value() << "): " << resp.content_as<bank_account>()
+              << "\n";
   }
   {
     auto [err, resp] = collection.get("bob", {}).get();
@@ -216,7 +231,8 @@ main()
       std::cout << "Unable to read account for Bob: " << err.message() << "\n";
       return EXIT_FAILURE;
     }
-    std::cout << "Bob (CAS=" << resp.cas().value() << "): " << resp.content_as<bank_account>() << "\n";
+    std::cout << "Bob (CAS=" << resp.cas().value() << "): " << resp.content_as<bank_account>()
+              << "\n";
   }
 
   cluster.close().get();
@@ -237,6 +253,9 @@ program_config::from_env() -> program_config
   }
   if (const auto* val = getenv("PASSWORD"); val != nullptr) {
     config.password = val;
+  }
+  if (const auto* val = getenv("PREFERRED_SERVER_GROUP"); val != nullptr) {
+    config.preferred_server_group = val;
   }
   if (const auto* val = getenv("BUCKET_NAME"); val != nullptr) {
     config.bucket_name = val;
@@ -274,12 +293,13 @@ program_config::quote(std::string val) -> std::string
 void
 program_config::dump()
 {
-  std::cout << "  CONNECTION_STRING: " << quote(connection_string) << "\n";
-  std::cout << "          USER_NAME: " << quote(user_name) << "\n";
-  std::cout << "           PASSWORD: [HIDDEN]\n";
-  std::cout << "        BUCKET_NAME: " << quote(bucket_name) << "\n";
-  std::cout << "         SCOPE_NAME: " << quote(scope_name) << "\n";
-  std::cout << "    COLLECTION_NAME: " << quote(collection_name) << "\n";
-  std::cout << "            VERBOSE: " << std::boolalpha << verbose << "\n";
-  std::cout << "            PROFILE: " << (profile ? quote(*profile) : "[NONE]") << "\n\n";
+  std::cout << "       CONNECTION_STRING: " << quote(connection_string) << "\n";
+  std::cout << "               USER_NAME: " << quote(user_name) << "\n";
+  std::cout << "                PASSWORD: [HIDDEN]\n";
+  std::cout << "  PREFERRED_SERVER_GROUP: " << quote(preferred_server_group) << "\n";
+  std::cout << "             BUCKET_NAME: " << quote(bucket_name) << "\n";
+  std::cout << "              SCOPE_NAME: " << quote(scope_name) << "\n";
+  std::cout << "         COLLECTION_NAME: " << quote(collection_name) << "\n";
+  std::cout << "                 VERBOSE: " << std::boolalpha << verbose << "\n";
+  std::cout << "                 PROFILE: " << (profile ? quote(*profile) : "[NONE]") << "\n\n";
 }
