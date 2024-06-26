@@ -11,7 +11,7 @@ cpmaddpackage(
   NAME
   couchbase_cxx_client
   GIT_TAG
-  76c30a927e81f8cc58f00c1cdba2f996c8c24385
+  0a172faa29cecb22a8774a49dd22748901d4f2d2
   VERSION
   1.0.0
   GITHUB_REPOSITORY

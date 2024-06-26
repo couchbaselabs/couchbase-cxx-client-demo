@@ -116,5 +116,7 @@ jobs:
               filepath = os.path.join(root, file)
               if os.access(filepath, os.X_OK) or filepath.endswith('.exe'):
                 print(f"##[group]{filepath}", file=sys.stderr)
-                subprocess.run(filepath)
+                result = subprocess.run(filepath)
                 print("##[endgroup]", file=sys.stderr)
+                if result.returncode != 0:
+                  sys.exit(result.returncode)

@@ -159,11 +159,12 @@ main()
           std::cout << "Unable to read account for Alice from preferred group \""
                     << preferred_server_group << "\": " << e1.ec().message()
                     << ". Falling back to regular get\n";
-          auto [e2, alice] = ctx->get(collection, "alice");
+          auto [e2, alice_fallback] = ctx->get(collection, "alice");
           if (e2.ec()) {
             std::cout << "Unable to read account for Alice: " << e2.ec().message() << "\n";
             return e2;
           }
+          alice = alice_fallback;
         }
         auto alice_content = alice.content_as<bank_account>();
 
@@ -172,11 +173,12 @@ main()
           std::cout << "Unable to read account for Bob from preferred group \""
                     << preferred_server_group << "\": " << e3.ec().message()
                     << ". Falling back to regular get\n";
-          auto [e4, alice] = ctx->get(collection, "alice");
+          auto [e4, bob_fallback] = ctx->get(collection, "bob");
           if (e4.ec()) {
             std::cout << "Unable to read account for Alice: " << e4.ec().message() << "\n";
             return e4;
           }
+          bob = bob_fallback;
         }
         auto bob_content = bob.content_as<bank_account>();
 
