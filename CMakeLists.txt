@@ -11,11 +11,11 @@ cpmaddpackage(
   NAME
   couchbase_cxx_client
   GIT_TAG
-  0a172faa29cecb22a8774a49dd22748901d4f2d2
+  1.0.0
   VERSION
   1.0.0
   GITHUB_REPOSITORY
-  "couchbaselabs/couchbase-cxx-client"
+  "couchbase/couchbase-cxx-client"
   OPTIONS
   "COUCHBASE_CXX_CLIENT_STATIC_BORINGSSL ON")
 
