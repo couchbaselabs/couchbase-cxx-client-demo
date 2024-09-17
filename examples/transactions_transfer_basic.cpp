@@ -1,4 +1,5 @@
 #include <couchbase/cluster.hxx>
+#include <couchbase/codec/tao_json_serializer.hxx>
 #include <couchbase/durability_level.hxx>
 #include <couchbase/logger.hxx>
 #include <couchbase/transactions/attempt_context.hxx>

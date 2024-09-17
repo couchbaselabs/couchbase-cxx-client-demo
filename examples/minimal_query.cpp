@@ -1,4 +1,5 @@
 #include <couchbase/cluster.hxx>
+#include <couchbase/codec/tao_json_serializer.hxx>
 #include <couchbase/logger.hxx>
 
 #include <tao/json.hpp>
@@ -98,7 +99,7 @@ main()
   }
 
   std::cout << "--- Iterating as JSON objects:\n";
-  for (auto row : resp.rows_as_json()) {
+  for (auto row : resp.rows_as()) {
     std::cout << "Airline(id: " << row["airline"]["id"] << ", name: \"" << row["airline"]["name"]
               << "\")\n";
   }
