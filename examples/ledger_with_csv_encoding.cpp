@@ -43,6 +43,14 @@ public:
   {
   }
 
+  constexpr byte_appender(const byte_appender&) = default;
+  byte_appender(byte_appender&&) = default;
+  auto operator=(const byte_appender& other) -> byte_appender&
+  {
+    output_ = other.output_;
+    return *this;
+  }
+
   auto operator=(char ch) -> byte_appender&
   {
     output_.push_back(static_cast<std::byte>(ch));

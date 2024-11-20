@@ -1,4 +1,5 @@
 #include <couchbase/cluster.hxx>
+#include <couchbase/codec/tao_json_serializer.hxx>
 #include <couchbase/logger.hxx>
 
 #include <tao/json.hpp>
