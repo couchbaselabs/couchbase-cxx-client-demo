@@ -25,7 +25,9 @@ else()
     GITHUB_REPOSITORY
     "couchbase/couchbase-cxx-client"
     OPTIONS
-    "COUCHBASE_CXX_CLIENT_STATIC_BORINGSSL ON")
+    "COUCHBASE_CXX_CLIENT_INSTALL ON"
+    "COUCHBASE_CXX_CLIENT_BUILD_SHARED ON"
+    "COUCHBASE_CXX_CLIENT_BUILD_STATIC OFF")
 endif()
 
 add_subdirectory(examples)

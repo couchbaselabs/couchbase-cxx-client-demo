@@ -17,6 +17,21 @@ jobs:
     steps:
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
+      - name: Install dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install -y libfmt-dev
+        # run: |
+        #   curl -L https://packages.couchbase.com/clients/cxx/repos/deb/${DIST}/${ARCH}/DEB-GPG-KEY.txt | \
+        #     sudo gpg --yes --dearmor -o /usr/share/keyrings/couchbase-archive-keyring.gpg
+        #   sudo curl -L -o/etc/apt/sources.list.d/couchbase-cxx-client.sources \
+        #     https://packages.couchbase.com/clients/cxx/repos/deb/${DIST}/${ARCH}/couchbase-cxx-client.sources
+        #   sudo apt update -y
+        #   sudo apt install -y couchbase-cxx-client couchbase-cxx-client-dev couchbase-cxx-client-tools libfmt-dev
+        #   cbc version --json
+        # env:
+        #   DIST: noble
+        #   ARCH: x86_64
       - name: Install cbdinocluster
         shell: python
         run: |
