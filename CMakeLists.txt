@@ -11,7 +11,7 @@ find_package(couchbase_cxx_client)
 if (couchbase_cxx_client_FOUND)
   find_package(taocpp-json REQUIRED)
 else()
-  set(LATEST_COUCHBASE_CXX_CLIENT 1.0.4)
+  set(LATEST_COUCHBASE_CXX_CLIENT 1.0.5)
 
   include(cmake/CPM.cmake)
 
