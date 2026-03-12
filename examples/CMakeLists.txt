@@ -25,3 +25,6 @@ target_link_libraries(transactions_transfer_with_binary_objects
 add_executable(ledger_with_csv_encoding ledger_with_csv_encoding.cpp)
 target_link_libraries(ledger_with_csv_encoding
     PRIVATE ${COUCHBASE_LIBRARY} taocpp::json fmt::fmt)
+
+add_executable(minimal_with_char_array minimal_with_char_array.cpp)
+target_link_libraries(minimal_with_char_array PRIVATE ${COUCHBASE_LIBRARY})
