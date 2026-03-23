@@ -51,4 +51,41 @@ else()
     FATAL_ERROR "Unable to find ${COUCHBASE_LIBRARY} for Couchbase C++ SDK")
 endif()
 
+option(BUILD_OPENTELEMETRY_EXAMPLES "Build opentelemetry examples" TRUE)
+if(BUILD_OPENTELEMETRY_EXAMPLES)
+  if(NOT CPM_DOWNLOAD_VERSION)
+    include(cmake/CPM.cmake)
+  endif()
+
+  # https://github.com/open-telemetry/opentelemetry-cpp/releases
+  cpmaddpackage(
+    NAME
+    opentelemetry
+    VERSION
+    1.23.0
+    GITHUB_REPOSITORY
+    "open-telemetry/opentelemetry-cpp"
+    EXCLUDE_FROM_ALL
+    ON
+    OPTIONS
+    "protobuf_MSVC_STATIC_RUNTIME OFF"
+    "OPENTELEMETRY_INSTALL OFF"
+    "WITH_ABI_VERSION_1 OFF"
+    "WITH_ABI_VERSION_2 ON"
+    "WITH_BENCHMARK OFF"
+    "WITH_EXAMPLES OFF"
+    "WITH_FUNC_TESTS OFF"
+    "WITH_OTLP_GRPC OFF"
+    "WITH_OTLP_HTTP ON"
+    "WITH_HTTP_CLIENT_CURL OFF"
+    "WITH_PROMETHEUS OFF"
+    "WITH_OPENTRACING OFF"
+    "WITH_STL CXX17"
+    "BUILD_TESTING OFF"
+    "BUILD_SHARED_LIBS OFF"
+    "CMAKE_C_VISIBILITY_PRESET hidden"
+    "CMAKE_CXX_VISIBILITY_PRESET hidden"
+    "CMAKE_POSITION_INDEPENDENT_CODE ON")
+endif()
+
 add_subdirectory(examples)
