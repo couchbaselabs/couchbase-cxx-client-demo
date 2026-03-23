@@ -19,7 +19,7 @@ endif()
 if(couchbase_cxx_client_FOUND OR couchbase_cxx_client_static_FOUND)
   find_package(taocpp-json REQUIRED)
 else()
-  set(LATEST_COUCHBASE_CXX_CLIENT 1.3.0)
+  set(LATEST_COUCHBASE_CXX_CLIENT 1.3.1)
 
   message(
     STATUS
