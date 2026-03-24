@@ -1,19 +1,20 @@
-#include <couchbase/cluster.hxx>
-#include <couchbase/codec/tao_json_serializer.hxx>
-#include <couchbase/logger.hxx>
+#include <couchbase/cluster.hxx> // Core SDK entry point: cluster, bucket, collection
+#include <couchbase/codec/tao_json_serializer.hxx> // JSON serialization via tao/json
+#include <couchbase/logger.hxx>                    // Optional SDK-level logging
 
-#include <tao/json.hpp>
+#include <tao/json.hpp> // JSON value type used for document content
 
 #include <iostream>
 
+// Holds connection parameters; defaults work against a local Couchbase instance.
 struct program_config {
   std::string connection_string{ "couchbase://127.0.0.1" };
   std::string user_name{ "Administrator" };
   std::string password{ "password" };
   std::string bucket_name{ "default" };
-  std::string scope_name{ couchbase::scope::default_name };
-  std::string collection_name{ couchbase::collection::default_name };
-  std::optional<std::string> profile{};
+  std::string scope_name{ couchbase::scope::default_name };           // "_default"
+  std::string collection_name{ couchbase::collection::default_name }; // "_default"
+  std::optional<std::string> profile{}; // e.g. "wan_development" for high-latency tuning
   bool verbose{ false };
 
   static auto from_env() -> program_config;
@@ -24,24 +25,28 @@ struct program_config {
 int
 main()
 {
-  auto config = program_config::from_env();
+  auto config = program_config::from_env(); // Load config from environment variables
   config.dump();
 
   if (config.verbose) {
+    // Enable SDK trace logging to stdout — useful for diagnosing connectivity issues
     couchbase::logger::initialize_console_logger();
     couchbase::logger::set_level(couchbase::logger::log_level::trace);
   }
 
+  // Cluster options carry credentials and optional performance profiles
   auto options = couchbase::cluster_options(config.user_name, config.password);
   if (config.profile) {
-    options.apply_profile(config.profile.value());
+    options.apply_profile(config.profile.value()); // Tune timeouts for your network conditions
   }
 
+  // Connect to the cluster; returns a (error, cluster) pair via structured bindings
   auto [connect_err, cluster] =
     couchbase::cluster::connect(config.connection_string, options).get();
   if (connect_err) {
     std::cout << "Unable to connect to the cluster. ec: " << connect_err.message() << "\n";
   } else {
+    // Navigate the data hierarchy: cluster → bucket → scope → collection
     auto collection = cluster.bucket(config.bucket_name)
                         .scope(config.scope_name)
                         .collection(config.collection_name);
@@ -49,6 +54,7 @@ main()
     const std::string document_id{ "minimal_example" };
 
     {
+      // upsert: insert or replace the document; no prior existence required
       const tao::json::value basic_doc{
         { "a", 1.0 },
         { "b", 2.0 },
@@ -59,21 +65,25 @@ main()
       if (err.ec()) {
         std::cout << ", Error: " << err.message() << "\n";
       } else {
+        // CAS (Compare-And-Swap) is a version token used for optimistic concurrency control
         std::cout << ", CAS: " << resp.cas().value() << "\n";
       }
     }
     {
+      // get: fetch a document by its ID
       auto [err, resp] = collection.get(document_id, {}).get();
       std::cout << "Get id: " << document_id;
       if (err.ec()) {
         std::cout << ", Error: " << err.message() << "\n";
       } else {
         std::cout << ", CAS: " << resp.cas().value() << "\n";
+        // content_as<T> deserializes the raw bytes into the requested type
         std::cout << tao::json::to_string(resp.content_as<tao::json::value>()) << "\n";
       }
     }
   }
 
+  // Gracefully shut down the cluster connection and release resources
   cluster.close().get();
 
   return 0;
@@ -84,6 +94,7 @@ program_config::from_env() -> program_config
 {
   program_config config{};
 
+  // Override defaults with environment variables when present
   if (const auto* val = getenv("CONNECTION_STRING"); val != nullptr) {
     config.connection_string = val;
   }

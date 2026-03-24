@@ -1,8 +1,8 @@
 #include <couchbase/cluster.hxx>
-#include <couchbase/codec/tao_json_serializer.hxx>
-#include <couchbase/durability_level.hxx>
+#include <couchbase/codec/tao_json_serializer.hxx> // JSON serialization for bank_account
+#include <couchbase/durability_level.hxx>          // Controls replication guarantees before ack
 #include <couchbase/logger.hxx>
-#include <couchbase/transactions/attempt_context.hxx>
+#include <couchbase/transactions/attempt_context.hxx> // Transaction handle: get/replace/insert/remove
 
 #include <tao/json.hpp>
 #include <tao/json/to_string.hpp>
@@ -25,12 +25,17 @@ struct program_config {
   void dump();
 };
 
+// Application-level error codes for the banking domain.
+// Returning one of these from inside a transaction lambda causes the
+// transaction to be rolled back with this code as the cause.
 enum bank_error : int {
   insufficient_funds = 1,
 };
 
 namespace
 {
+// std::error_category subclass that gives bank_error codes human-readable names.
+// Required boilerplate to integrate a custom enum with std::error_code.
 struct bank_error_category : std::error_category {
   [[nodiscard]] auto name() const noexcept -> const char* override
   {
@@ -48,6 +53,7 @@ struct bank_error_category : std::error_category {
   }
 };
 
+// Singleton category instance — error_category objects must outlive any error_code that uses them.
 const static bank_error_category instance{};
 const std::error_category&
 bank_error_category_instance() noexcept
@@ -56,16 +62,19 @@ bank_error_category_instance() noexcept
 }
 } // namespace
 
+// Tell the standard library that bank_error values can be implicitly converted to std::error_code.
 template<>
 struct std::is_error_code_enum<bank_error> : std::true_type {
 };
 
+// ADL-found factory that constructs a std::error_code from a bank_error value.
 auto
 make_error_code(bank_error e) -> std::error_code
 {
   return { static_cast<int>(e), bank_error_category_instance() };
 }
 
+// Simple ledger entry: a named account with a balance in USD cents (or whole dollars here).
 struct bank_account {
   std::string name;
   std::int64_t balance;
@@ -78,6 +87,8 @@ operator<<(std::ostream& os, const bank_account& a)
   return os;
 }
 
+// Teach tao/json how to serialize and deserialize bank_account.
+// assign() converts C++ → JSON; as() converts JSON → C++.
 template<>
 struct tao::json::traits<bank_account> {
   template<template<typename...> class Traits>
@@ -103,19 +114,22 @@ struct tao::json::traits<bank_account> {
 int
 main()
 {
-  auto config = program_config::from_env();
+  auto config = program_config::from_env(); // Load config from environment variables
   config.dump();
 
   if (config.verbose) {
+    // Enable SDK trace logging to stdout — useful for diagnosing connectivity issues
     couchbase::logger::initialize_console_logger();
     couchbase::logger::set_level(couchbase::logger::log_level::trace);
   }
 
+  // Cluster options carry credentials and optional performance profiles
   auto options = couchbase::cluster_options(config.user_name, config.password);
   if (config.profile) {
-    options.apply_profile(config.profile.value());
+    options.apply_profile(config.profile.value()); // Tune timeouts for your network conditions
   }
 
+  // Connect to the cluster; returns a (error, cluster) pair via structured bindings
   auto [connect_err, cluster] =
     couchbase::cluster::connect(config.connection_string, options).get();
   if (connect_err) {
@@ -126,6 +140,9 @@ main()
   auto collection =
     cluster.bucket(config.bucket_name).scope(config.scope_name).collection(config.collection_name);
 
+  // majority durability: the write is acknowledged only after a majority of replicas
+  // have it in memory. Using this for the seed upserts matches the durability guarantee
+  // that Couchbase Transactions enforce internally, avoiding inconsistent initial state.
   auto upsert_options =
     couchbase::upsert_options{}.durability(couchbase::durability_level::majority);
   {
@@ -150,13 +167,18 @@ main()
   }
 
   {
+    // cluster.transactions()->run() executes the lambda as a single ACID transaction.
+    // If the lambda returns an error — or if a transient conflict occurs — the SDK
+    // automatically retries with exponential back-off. All ctx->get/replace calls
+    // inside the lambda are part of the same atomic unit of work.
     auto [err, res] = cluster.transactions()->run(
       [collection](
         std::shared_ptr<couchbase::transactions::attempt_context> ctx) -> couchbase::error {
+        // ctx->get locks the document for the duration of this attempt
         auto [e1, alice] = ctx->get(collection, "alice");
         if (e1.ec()) {
           std::cout << "Unable to read account for Alice: " << e1.ec().message() << "\n";
-          return e1;
+          return e1; // Returning an error rolls back and stops retrying
         }
         auto alice_content = alice.content_as<bank_account>();
 
@@ -171,15 +193,18 @@ main()
         if (alice_content.balance < money_to_transfer) {
           std::cout << "Alice does not have enough money to transfer " << money_to_transfer
                     << " USD to Bob\n";
+          // Returning an application error causes an immediate rollback — no retry
           return {
             bank_error::insufficient_funds,
             "not enough funds on Alice's account",
           };
         }
+        // Debit Alice and credit Bob atomically — both writes commit or neither does
         alice_content.balance -= money_to_transfer;
         bob_content.balance += money_to_transfer;
 
         {
+          // ctx->replace stages the write; it is not visible outside the transaction until commit
           auto [e3, a] = ctx->replace(alice, alice_content);
           if (e3.ec()) {
             std::cout << "Unable to read account for Alice: " << e3.ec().message() << "\n";
@@ -191,11 +216,12 @@ main()
             std::cout << "Unable to update account for Bob: " << e4.ec().message() << "\n";
           }
         }
-        return {};
+        return {}; // Empty error signals success; the SDK commits the transaction
       });
 
     if (err.ec()) {
       std::cout << "Transaction has failed: " << err.ec().message() << "\n";
+      // err.cause() carries the underlying application or SDK error that triggered the failure
       if (auto cause = err.cause(); cause.has_value()) {
         std::cout << "Cause: " << cause->ec().message() << "\n";
       }
@@ -203,6 +229,7 @@ main()
     }
   }
 
+  // Read back both accounts to confirm the transfer is visible post-commit
   {
     auto [err, resp] = collection.get("alice", {}).get();
     if (err.ec()) {
@@ -222,6 +249,7 @@ main()
               << "\n";
   }
 
+  // Gracefully shut down the cluster connection and release resources
   cluster.close().get();
 
   return 0;
@@ -232,6 +260,7 @@ program_config::from_env() -> program_config
 {
   program_config config{};
 
+  // Override defaults with environment variables when present
   if (const auto* val = getenv("CONNECTION_STRING"); val != nullptr) {
     config.connection_string = val;
   }

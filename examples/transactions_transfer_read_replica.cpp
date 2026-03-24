@@ -1,8 +1,8 @@
 #include <couchbase/cluster.hxx>
-#include <couchbase/codec/tao_json_serializer.hxx>
-#include <couchbase/durability_level.hxx>
+#include <couchbase/codec/tao_json_serializer.hxx> // JSON serialization for bank_account
+#include <couchbase/durability_level.hxx>          // Controls replication guarantees before ack
 #include <couchbase/logger.hxx>
-#include <couchbase/transactions/attempt_context.hxx>
+#include <couchbase/transactions/attempt_context.hxx> // Transaction handle: get/replace/insert/remove
 
 #include <tao/json.hpp>
 #include <tao/json/to_string.hpp>
@@ -14,6 +14,10 @@ struct program_config {
   std::string connection_string{ "couchbase://127.0.0.1" };
   std::string user_name{ "Administrator" };
   std::string password{ "password" };
+  // Server Group name that this application instance is co-located with (e.g. a rack or
+  // availability zone). The SDK will prefer replicas on this group for reads, reducing
+  // cross-rack or cross-zone network traffic.
+  // See: https://docs.couchbase.com/server/current/learn/clusters-and-availability/groups.html
   std::string preferred_server_group{ "Group 1" };
   std::string bucket_name{ "default" };
   std::string scope_name{ couchbase::scope::default_name };
@@ -26,12 +30,17 @@ struct program_config {
   void dump();
 };
 
+// Application-level error codes for the banking domain.
+// Returning one of these from inside a transaction lambda causes the
+// transaction to be rolled back with this code as the cause.
 enum bank_error : int {
   insufficient_funds = 1,
 };
 
 namespace
 {
+// std::error_category subclass that gives bank_error codes human-readable names.
+// Required boilerplate to integrate a custom enum with std::error_code.
 struct bank_error_category : std::error_category {
   [[nodiscard]] auto name() const noexcept -> const char* override
   {
@@ -49,6 +58,7 @@ struct bank_error_category : std::error_category {
   }
 };
 
+// Singleton category instance — error_category objects must outlive any error_code that uses them.
 const static bank_error_category instance{};
 const std::error_category&
 bank_error_category_instance() noexcept
@@ -57,16 +67,19 @@ bank_error_category_instance() noexcept
 }
 } // namespace
 
+// Tell the standard library that bank_error values can be implicitly converted to std::error_code.
 template<>
 struct std::is_error_code_enum<bank_error> : std::true_type {
 };
 
+// ADL-found factory that constructs a std::error_code from a bank_error value.
 auto
 make_error_code(bank_error e) -> std::error_code
 {
   return { static_cast<int>(e), bank_error_category_instance() };
 }
 
+// Simple ledger entry: a named account with a balance in USD.
 struct bank_account {
   std::string name;
   std::int64_t balance;
@@ -79,6 +92,8 @@ operator<<(std::ostream& os, const bank_account& a)
   return os;
 }
 
+// Teach tao/json how to serialize and deserialize bank_account.
+// assign() converts C++ → JSON; as() converts JSON → C++.
 template<>
 struct tao::json::traits<bank_account> {
   template<template<typename...> class Traits>
@@ -104,20 +119,26 @@ struct tao::json::traits<bank_account> {
 int
 main()
 {
-  auto config = program_config::from_env();
+  auto config = program_config::from_env(); // Load config from environment variables
   config.dump();
 
   if (config.verbose) {
+    // Enable SDK trace logging to stdout — useful for diagnosing connectivity issues
     couchbase::logger::initialize_console_logger();
     couchbase::logger::set_level(couchbase::logger::log_level::trace);
   }
 
   auto options = couchbase::cluster_options(config.user_name, config.password);
+  // Tell the SDK which Server Group this process lives in. When set, the SDK routes
+  // replica reads to nodes in this group first, keeping traffic local to the rack or
+  // availability zone and avoiding unnecessary cross-group latency. Active (write) operations
+  // are always sent to the vBucket primary regardless of this setting.
   options.network().preferred_server_group(config.preferred_server_group);
   if (config.profile) {
-    options.apply_profile(config.profile.value());
+    options.apply_profile(config.profile.value()); // Tune timeouts for your network conditions
   }
 
+  // Connect to the cluster; returns a (error, cluster) pair via structured bindings
   auto [connect_err, cluster] =
     couchbase::cluster::connect(config.connection_string, options).get();
   if (connect_err) {
@@ -128,6 +149,8 @@ main()
   auto collection =
     cluster.bucket(config.bucket_name).scope(config.scope_name).collection(config.collection_name);
 
+  // majority durability: acknowledged only after a majority of replicas have the write in memory,
+  // matching the durability level that Couchbase Transactions enforce internally.
   auto upsert_options =
     couchbase::upsert_options{}.durability(couchbase::durability_level::majority);
   {
@@ -152,18 +175,29 @@ main()
   }
 
   {
+    // cluster.transactions()->run() executes the lambda as a single ACID transaction.
+    // If the lambda returns an error — or if a transient conflict occurs — the SDK
+    // automatically retries with exponential back-off. All ctx->get/replace calls
+    // inside the lambda are part of the same atomic unit of work.
     auto [err, res] = cluster.transactions()->run(
       [collection, preferred_server_group = config.preferred_server_group](
         std::shared_ptr<couchbase::transactions::attempt_context> ctx) -> couchbase::error {
+        // get_replica_from_preferred_server_group reads from a replica on the local Server Group
+        // instead of always going to the active vBucket node. This reduces read latency when
+        // the active vBucket is on a different rack or availability zone than this process.
+        // Note: replicas may be slightly behind the active — this is safe inside a transaction
+        // because the SDK's conflict detection will catch any stale-read anomalies on commit.
         auto [e1, alice] = ctx->get_replica_from_preferred_server_group(collection, "alice");
         if (e1.ec()) {
+          // The preferred group may not yet hold a replica for this vBucket (e.g. after a
+          // rebalance). Fall back to a regular active-node read to remain correct.
           std::cout << "Unable to read account for Alice from preferred group \""
                     << preferred_server_group << "\": " << e1.ec().message()
                     << ". Falling back to regular get\n";
           auto [e2, alice_fallback] = ctx->get(collection, "alice");
           if (e2.ec()) {
             std::cout << "Unable to read account for Alice: " << e2.ec().message() << "\n";
-            return e2;
+            return e2; // Returning an error rolls back and stops retrying
           }
           alice = alice_fallback;
         }
@@ -187,15 +221,19 @@ main()
         if (alice_content.balance < money_to_transfer) {
           std::cout << "Alice does not have enough money to transfer " << money_to_transfer
                     << " USD to Bob\n";
+          // Returning an application error causes an immediate rollback — no retry
           return {
             bank_error::insufficient_funds,
             "not enough funds on Alice's account",
           };
         }
+        // Debit Alice and credit Bob atomically — both writes commit or neither does.
+        // Writes always target the active vBucket node, regardless of preferred_server_group.
         alice_content.balance -= money_to_transfer;
         bob_content.balance += money_to_transfer;
 
         {
+          // ctx->replace stages the write; it is not visible outside the transaction until commit
           auto [e5, a] = ctx->replace(alice, alice_content);
           if (e5.ec()) {
             std::cout << "Unable to update account for Alice: " << e5.ec().message() << "\n";
@@ -207,11 +245,12 @@ main()
             std::cout << "Unable to update account for Bob: " << e6.ec().message() << "\n";
           }
         }
-        return {};
+        return {}; // Empty error signals success; the SDK commits the transaction
       });
 
     if (err.ec()) {
       std::cout << "Transaction has failed: " << err.ec().message() << "\n";
+      // err.cause() carries the underlying application or SDK error that triggered the failure
       if (auto cause = err.cause(); cause.has_value()) {
         std::cout << "Cause: " << cause->ec().message() << "\n";
       }
@@ -219,6 +258,7 @@ main()
     }
   }
 
+  // Read back both accounts to confirm the transfer is visible post-commit
   {
     auto [err, resp] = collection.get("alice", {}).get();
     if (err.ec()) {
@@ -238,6 +278,7 @@ main()
               << "\n";
   }
 
+  // Gracefully shut down the cluster connection and release resources
   cluster.close().get();
 
   return 0;
@@ -248,6 +289,7 @@ program_config::from_env() -> program_config
 {
   program_config config{};
 
+  // Override defaults with environment variables when present
   if (const auto* val = getenv("CONNECTION_STRING"); val != nullptr) {
     config.connection_string = val;
   }
