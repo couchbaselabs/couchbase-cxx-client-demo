@@ -23,9 +23,22 @@
  *   Metrics  (couchbase::metrics::otel_meter)
  *     Wraps an opentelemetry::metrics::Meter.  Installed via:
  *       options.metrics().meter(std::make_shared<otel_meter>(meter))
- *     The SDK records per-operation latency histograms and counters through
- *     that meter.  A PeriodicExportingMetricReader (default interval: 5 s)
+ *     The SDK records per-operation latency histograms (db.client.operation.duration,
+ *     unit "s") and retry/timeout counters, all labelled by bucket, scope, collection,
+ *     and operation type.  A PeriodicExportingMetricReader (default interval: 5 s)
  *     pushes those measurements to the configured OTLP endpoint.
+ *
+ *     Histogram bucket calibration: the SDK measures durations in microseconds
+ *     internally, then converts to seconds before recording.  The OpenTelemetry
+ *     SDK's built-in default histogram boundaries are calibrated for millisecond
+ *     values and are therefore orders of magnitude too large for second-valued
+ *     Couchbase metrics; almost every sample would fall into the first bucket,
+ *     rendering percentile estimates meaningless.  apply_opentelemetry_meter_options()
+ *     installs a process-wide catch-all View that replaces those defaults with eight
+ *     boundaries spanning 100 µs to 10 s — the second-scale equivalent of the
+ *     Couchbase Java SDK's canonical nanosecond boundaries.  See
+ *     opentelemetry_metrics_config::histogram_boundaries for the full conversion table.
+ *
  *     See apply_opentelemetry_meter_options() below.
  *
  * Both providers use an AlwaysOnSampler / cumulative aggregation and export
@@ -120,11 +133,14 @@
  * Metrics → Prometheus  http://localhost:9090
  *   The OTel Collector exposes a Prometheus scrape endpoint on :8889;
  *   Prometheus scrapes it every 15 s (telemetry-cluster/prometheus.yml).
- *   In the Prometheus expression browser search for metrics prefixed with
- *   "db_couchbase" — the namespace the Couchbase SDK uses for its instruments.
- *   Example queries:
- *     db_couchbase_operations_duration_bucket — latency histogram by operation
- *     db_couchbase_operations_total           — total operation counter
+ *   The Couchbase C++ SDK records a single histogram instrument:
+ *     db.client.operation.duration  (unit "s")
+ *   which Prometheus renders with the standard histogram suffixes:
+ *     db_client_operation_duration_seconds_bucket — per-bucket sample counts (use for percentiles)
+ *     db_client_operation_duration_seconds_sum    — cumulative latency across all operations
+ *     db_client_operation_duration_seconds_count  — total number of completed operations
+ *   Each series is labelled with the service type (kv, query, …) and operation name
+ *   (upsert, get, …), allowing fine-grained per-operation latency analysis.
  *
  * Metrics + Traces → Grafana  http://localhost:3000
  *   Grafana is pre-provisioned (anonymous Admin, no login required) with
@@ -143,12 +159,16 @@
 #include <opentelemetry/trace/provider.h>
 
 // Metrics SDK
+#include <opentelemetry/sdk/metrics/aggregation/aggregation_config.h>
 #include <opentelemetry/sdk/metrics/export/periodic_exporting_metric_reader.h>
 #include <opentelemetry/sdk/metrics/instruments.h>
 #include <opentelemetry/sdk/metrics/meter.h>
 #include <opentelemetry/sdk/metrics/meter_context_factory.h>
 #include <opentelemetry/sdk/metrics/meter_provider.h>
 #include <opentelemetry/sdk/metrics/meter_provider_factory.h>
+#include <opentelemetry/sdk/metrics/view/instrument_selector_factory.h>
+#include <opentelemetry/sdk/metrics/view/meter_selector_factory.h>
+#include <opentelemetry/sdk/metrics/view/view_factory.h>
 #include <opentelemetry/sdk/metrics/view/view_registry_factory.h>
 
 // Trace SDK
@@ -171,6 +191,7 @@
 #include <tao/json.hpp>
 
 #include <chrono>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 
@@ -292,6 +313,52 @@ struct opentelemetry_metrics_config {
   // Env: OTEL_METRICS_COMPRESSION  (e.g. "gzip")
   std::optional<std::string> compression{};
 
+  // Explicit bucket boundaries applied to every registered HISTOGRAM instrument
+  // via a process-wide catch-all View (see apply_opentelemetry_meter_options).
+  //
+  // Why custom boundaries are necessary
+  // ------------------------------------
+  // The Couchbase C++ SDK records db.client.operation.duration in seconds,
+  // converting internally from microsecond-resolution measurements before calling
+  // into the OTel histogram.  The OpenTelemetry SDK's built-in default boundaries:
+  //
+  //   [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000] s
+  //
+  // are calibrated for millisecond values (a convention rooted in the HTTP latency
+  // metrics of the OTel semantic conventions).  For second-valued Couchbase histograms
+  // — where a well-connected operation typically completes in under 10 ms — almost
+  // every sample would land in the first bucket, making p50/p99 estimates meaningless.
+  //
+  // The defaults below
+  // -------------------
+  // Eight boundaries spanning 100 µs to 10 s, chosen to match the Couchbase Java
+  // SDK's canonical nanosecond recommendation, scaled to seconds (÷ 1 000 000 000):
+  //
+  //   Java SDK (nanoseconds)    C++ SDK (seconds)    Human-readable
+  //              100 000   →        0.0001            100 µs
+  //              250 000   →        0.00025           250 µs
+  //              500 000   →        0.0005            500 µs
+  //            1 000 000   →        0.001               1 ms
+  //           10 000 000   →        0.01               10 ms
+  //          100 000 000   →        0.1               100 ms
+  //        1 000 000 000   →        1.0                 1 s
+  //       10 000 000 000   →       10.0                10 s
+  //
+  // To use different boundaries, assign to this field before calling
+  // apply_opentelemetry_meter_options().  No environment-variable override is
+  // provided: safe textual round-trip encoding of a floating-point boundary list
+  // is non-trivial and error-prone.
+  std::vector<double> histogram_boundaries{
+    0.0001,  // 100 µs
+    0.00025, // 250 µs
+    0.0005,  // 500 µs
+    0.001,   //   1 ms
+    0.01,    //  10 ms
+    0.1,     // 100 ms
+    1.0,     //   1 s
+    10.0,    //  10 s
+  };
+
   static void fill_from_env(opentelemetry_metrics_config& config);
 };
 
@@ -381,6 +448,7 @@ make_otel_resource() -> opentelemetry::sdk::resource::Resource
 //   Couchbase SDK instruments
 //     → couchbase::metrics::otel_meter  (SDK adapter, implements couchbase meter interface)
 //     → global OTel MeterProvider
+//     → ViewRegistry                    (custom histogram buckets: 100 µs … 10 s)
 //     → PeriodicExportingMetricReader   (fires every reader_export_interval, default 5 s)
 //     → OtlpHttpMetricExporter          (HTTP POST to OTLP endpoint as JSON)
 //     → OTel Collector                  (receives on :4318, exposes Prometheus scrape on :8889)
@@ -388,6 +456,7 @@ make_otel_resource() -> opentelemetry::sdk::resource::Resource
 //
 // Returns the SDK-level MeterProvider so the caller can call ForceFlush/Shutdown before
 // exit and guarantee all buffered metric data points are flushed to the collector.
+// tag::metrics-otel-prometheus[]
 auto
 apply_opentelemetry_meter_options(couchbase::cluster_options& options,
                                   const opentelemetry_metrics_config& metrics)
@@ -457,13 +526,47 @@ apply_opentelemetry_meter_options(couchbase::cluster_options& options,
                                                                    reader_options)
   };
 
+  // --- Histogram View: explicit bucket boundaries ---
+  // Registers a single catch-all View that overrides the aggregation for every
+  // HISTOGRAM instrument in the process, replacing the OTel SDK's built-in
+  // default boundaries with the calibrated set from metrics.histogram_boundaries.
+  //
+  // The InstrumentSelector matches any instrument name and any unit (both wildcarded),
+  // filtered to HISTOGRAM type only.  The MeterSelector is similarly open, so the
+  // View applies regardless of which library or SDK component registered the meter.
+  // The View itself carries no name or description, so each instrument retains its
+  // own identity; only the aggregation configuration is overridden.
+  //
+  // This View must be registered before the first Meter is obtained from the
+  // provider — AddView is not thread-safe and has no effect on instruments that
+  // are already recording.  Wiring it into the ViewRegistry at MeterContext
+  // construction time (before SetMeterProvider is called) satisfies that constraint.
+  auto histogram_config =
+    std::make_shared<opentelemetry::sdk::metrics::HistogramAggregationConfig>();
+  histogram_config->boundaries_ = metrics.histogram_boundaries;
+
+  auto view_registry = opentelemetry::sdk::metrics::ViewRegistryFactory::Create();
+  view_registry->AddView(
+    // Select all HISTOGRAM instruments, irrespective of name or unit.
+    // InstrumentSelector uses kPattern for name ("*" = wildcard) but kExact for
+    // unit ("" = MatchEverythingPattern = match-all; "*" would be a literal match).
+    opentelemetry::sdk::metrics::InstrumentSelectorFactory::Create(
+      opentelemetry::sdk::metrics::InstrumentType::kHistogram, "*", ""),
+    // Apply to every meter, regardless of name, version, or schema URL.
+    // MeterSelector uses kExact matching for all three fields; "" produces
+    // MatchEverythingPattern (match-all). "*" would be a literal string match.
+    opentelemetry::sdk::metrics::MeterSelectorFactory::Create("", "", ""),
+    // Inherit the instrument's name and description; only the aggregation changes.
+    opentelemetry::sdk::metrics::ViewFactory::Create(
+      "", "", opentelemetry::sdk::metrics::AggregationType::kHistogram, histogram_config));
+
   // --- MeterProvider assembly ---
   // MeterContext owns the ViewRegistry (which controls aggregation and filtering rules
   // per instrument) and the list of active readers.  The MeterProvider is the factory
   // that creates Meter objects; both application code and the Couchbase SDK adapter
   // call GetMeter() on it to obtain a scoped meter.
-  auto context = opentelemetry::sdk::metrics::MeterContextFactory::Create(
-    opentelemetry::sdk::metrics::ViewRegistryFactory::Create(), resource);
+  auto context =
+    opentelemetry::sdk::metrics::MeterContextFactory::Create(std::move(view_registry), resource);
   context->AddMetricReader(std::move(reader));
 
   // Promote to shared_ptr (MeterProviderFactory returns unique_ptr) so that
@@ -488,6 +591,7 @@ apply_opentelemetry_meter_options(couchbase::cluster_options& options,
 
   return sdk_provider;
 }
+// end::metrics-otel-prometheus[]
 
 // Sets up the OpenTelemetry tracing pipeline and wires it into the Couchbase cluster
 // options so every SDK operation emits child spans under the caller-supplied parent.
@@ -648,6 +752,26 @@ main()
     // giving a single trace that covers one loop iteration.
     auto tracer = opentelemetry::trace::Provider::GetTracerProvider()->GetTracer(k_service_name,
                                                                                  k_service_version);
+    std::size_t error_count{ 0 };
+    std::string last_error{};
+    const auto print_progress = [&](std::size_t iteration) {
+      const std::size_t done = iteration + 1;
+      const int pct = static_cast<int>(done * 100 / config.num_iterations);
+      constexpr int bar_width = 30;
+      const int filled = pct * bar_width / 100;
+      std::string bar(static_cast<std::size_t>(filled), '=');
+      if (filled < bar_width) {
+        bar += '>';
+        bar += std::string(static_cast<std::size_t>(bar_width - filled - 1), ' ');
+      }
+      std::cout << "\r[" << bar << "] " << std::setw(3) << pct << "% " << done << "/"
+                << config.num_iterations << "  errors: " << error_count;
+      if (!last_error.empty()) {
+        std::cout << "  last error: " << last_error;
+      }
+      std::cout << "   " << std::flush;
+    };
+
     for (std::size_t iteration = 0; iteration < config.num_iterations; ++iteration) {
       const std::string document_id{ "item::WIDGET-" + std::to_string(iteration) };
 
@@ -677,12 +801,9 @@ main()
         auto [err, resp] =
           collection.upsert(document_id, item, couchbase::upsert_options{}.parent_span(cb_parent))
             .get();
-        std::cout << "[" << (iteration + 1) << "/" << config.num_iterations
-                  << "] Upsert id: " << document_id;
         if (err.ec()) {
-          std::cout << ", Error: " << err.message() << "\n";
-        } else {
-          std::cout << ", CAS: " << resp.cas().value() << "\n";
+          ++error_count;
+          last_error = "upsert: " + err.message();
         }
       }
       {
@@ -691,14 +812,13 @@ main()
         // The SDK emits a "get" child span with a "dispatch_to_server" grandchild.
         auto [err, resp] =
           collection.get(document_id, couchbase::get_options{}.parent_span(cb_parent)).get();
-        std::cout << "[" << (iteration + 1) << "/" << config.num_iterations
-                  << "] Get id: " << document_id;
         if (err.ec()) {
-          std::cout << ", Error: " << err.message() << "\n";
-        } else {
-          std::cout << ", CAS: " << resp.cas().value() << "\n";
+          ++error_count;
+          last_error = "get: " + err.message();
         }
       }
+
+      print_progress(iteration);
 
       // Mark the root span successful and close it.  The SDK child spans (upsert,
       // get) are already ended by the time collection.upsert/get return.
@@ -710,6 +830,7 @@ main()
                                      .count();
       iteration_duration->Record(iter_elapsed_ms, opentelemetry::context::Context{});
     }
+    std::cout << "\n";
   }
 
   cluster.close().get();
@@ -912,6 +1033,18 @@ program_config::dump()
   std::cout << "             OTEL_METRICS_USE_SSL_CREDENTIALS: " << std::boolalpha << metrics_config.use_ssl_credentials << "\n";
   std::cout << "          OTEL_METRICS_SSL_CREDENTIALS_CACERT: " << quote(metrics_config.ssl_credentials_cacert)<< "\n";
   std::cout << "                     OTEL_METRICS_COMPRESSION: " << quote(metrics_config.compression)<< "\n";
+  {
+    std::cout << "            OTEL_METRICS_HISTOGRAM_BOUNDARIES: [";
+    bool first = true;
+    for (const auto& b : metrics_config.histogram_boundaries) {
+      if (!first) {
+        std::cout << ", ";
+      }
+      std::cout << b;
+      first = false;
+    }
+    std::cout << "]\n";
+  }
   if (metrics_config.headers.empty()) {
     std::cout << "                         OTEL_METRICS_HEADERS: [NONE]\n";
   } else {
